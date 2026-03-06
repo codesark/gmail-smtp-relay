@@ -1,0 +1,20 @@
+# Go
+bin/
+out/
+smtp-relay
+go.sum
+
+# Docker/Persistence
+data/
+storage/
+.env
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Local/Sample Files
+*.example
+test_*.py
+EOF
