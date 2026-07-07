@@ -67,6 +67,10 @@ After successful staging validation, switch to production:
 
 - Renewal loop interval: `RENEW_INTERVAL_SECONDS` (default 12h).
 - Certbot only renews when nearing expiry.
+- Automatic relay reload: the relay loads its TLS keypair once at startup,
+  so set `RELAY_RESTART_CONTAINER` (e.g. `go-smtp-gmail-relay`) and mount
+  `/var/run/docker.sock` into the acme containers — the renew script then
+  restarts that container whenever a new certificate is deployed.
 - Optional post action command:
   - `ACME_POST_HOOK` (for example, controlled restart/reload workflow).
 
