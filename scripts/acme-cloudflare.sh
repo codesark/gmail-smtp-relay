@@ -83,6 +83,34 @@ run_post_hook_if_any() {
   fi
 }
 
+# The relay loads its TLS keypair once at startup, so it must be restarted
+# whenever a new certificate is deployed. The deploy-hook drops a flag file;
+# if present, restart RELAY_RESTART_CONTAINER through the docker socket
+# (python stdlib only — the certbot image has no docker CLI or curl).
+restart_relay_if_deployed() {
+  [ -f /tmp/acme/cert-deployed ] || return 0
+  rm -f /tmp/acme/cert-deployed
+  if [ -z "${RELAY_RESTART_CONTAINER:-}" ]; then
+    return 0
+  fi
+  if [ ! -S /var/run/docker.sock ]; then
+    echo "docker.sock not mounted; restart ${RELAY_RESTART_CONTAINER} manually to load the new certificate." >&2
+    return 0
+  fi
+  echo "Certificate deployed; restarting ${RELAY_RESTART_CONTAINER}..."
+  python3 - "${RELAY_RESTART_CONTAINER}" <<'PY' || echo "Relay restart failed; restart ${RELAY_RESTART_CONTAINER} manually to load the new certificate." >&2
+import socket, sys
+name = sys.argv[1]
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(120)
+s.connect("/var/run/docker.sock")
+s.sendall(f"POST /v1.41/containers/{name}/restart?t=10 HTTP/1.1\r\nHost: docker\r\nContent-Length: 0\r\n\r\n".encode())
+status = s.recv(4096).decode().splitlines()[0]
+print(f"docker restart {name}: {status}")
+sys.exit(0 if " 204" in status else 1)
+PY
+}
+
 renew_once() {
   mapfile -t base_args < <(certbot_base_args)
   certbot renew \
@@ -91,7 +119,7 @@ renew_once() {
     --work-dir "${LETSENCRYPT_WORK_DIR}" \
     --logs-dir "${LETSENCRYPT_LOGS_DIR}" \
     --keep-until-expiring \
-    --deploy-hook "cp -f ${LETSENCRYPT_CONFIG_DIR}/live/${CERT_NAME:-${DNS_NAME}}/fullchain.pem ${CERT_OUTPUT_DIR}/fullchain.pem && cp -f ${LETSENCRYPT_CONFIG_DIR}/live/${CERT_NAME:-${DNS_NAME}}/privkey.pem ${CERT_OUTPUT_DIR}/privkey.pem && chmod 755 ${CERT_OUTPUT_DIR} && chmod 644 ${CERT_OUTPUT_DIR}/fullchain.pem ${CERT_OUTPUT_DIR}/privkey.pem"
+    --deploy-hook "cp -f ${LETSENCRYPT_CONFIG_DIR}/live/${CERT_NAME:-${DNS_NAME}}/fullchain.pem ${CERT_OUTPUT_DIR}/fullchain.pem && cp -f ${LETSENCRYPT_CONFIG_DIR}/live/${CERT_NAME:-${DNS_NAME}}/privkey.pem ${CERT_OUTPUT_DIR}/privkey.pem && chmod 755 ${CERT_OUTPUT_DIR} && chmod 644 ${CERT_OUTPUT_DIR}/fullchain.pem ${CERT_OUTPUT_DIR}/privkey.pem && touch /tmp/acme/cert-deployed"
 }
 
 main() {
@@ -125,13 +153,16 @@ main() {
 
   if [ "${ACME_RENEW_ONCE}" = "true" ]; then
     renew_once
+    restart_relay_if_deployed
     run_post_hook_if_any
     exit 0
   fi
 
   while true; do
+    echo "Renew loop: next attempt in ${RENEW_INTERVAL_SECONDS}s."
     sleep "${RENEW_INTERVAL_SECONDS}"
     renew_once || echo "Renew attempt failed; will retry on next interval."
+    restart_relay_if_deployed || echo "Relay restart failed; relay may need manual restart to load the new certificate."
     run_post_hook_if_any || echo "Post-hook failed; relay may need manual restart/reload."
   done
 }
